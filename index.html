@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quỹ sinh viên minh bạch</title>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<style>
+  :root { --navy:#0b1f3a; --teal:#0e9aa7; --bg:#eef3fa; --ok:#3ba776; --warn:#e4572e; }
+  * { box-sizing: border-box; }
+  body { font-family: Calibri, Arial, sans-serif; margin: 0; background: #fff; color: var(--navy); }
+  header { background: var(--navy); color: #fff; padding: 16px 24px; }
+  header h1 { margin: 0; font-size: 22px; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px 24px 48px; }
+  .card { background: var(--bg); border-radius: 10px; padding: 16px; margin: 16px 0; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  input { padding: 8px; border: 1px solid #9ab; border-radius: 6px; min-width: 220px; }
+  button { background: var(--teal); color: #fff; border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  button.secondary { background: var(--navy); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .stat b { display: block; font-size: 26px; color: var(--teal); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border: 1px solid #b7c4d6; padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--navy); color: #fff; }
+  .mono { font-family: Consolas, monospace; font-size: 12px; word-break: break-all; }
+  #msg { padding: 8px 12px; border-radius: 6px; margin: 8px 0; display: none; }
+  #msg.ok { display: block; background: #dff5ea; } #msg.err { display: block; background: #fde4de; }
+</style>
+</head>
+<body>
+<header><h1>Quỹ hoạt động sinh viên minh bạch (nguyên mẫu)</h1></header>
+<main>
+  <div id="msg"></div>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnConnect">Kết nối ví MetaMask</button>
+      <input id="addr" placeholder="Địa chỉ hợp đồng StudentFund (0x...)">
+      <button id="btnLoad" class="secondary">Tải dữ liệu quỹ</button>
+    </div>
+    <p>Tài khoản: <span id="acct" class="mono">chưa kết nối</span> | Vai trò: <b id="role">-</b></p>
+  </div>
+
+  <div class="card stats">
+    <div class="stat"><span>Số dư</span><b id="sBal">-</b></div>
+    <div class="stat"><span>Tổng thu</span><b id="sIn">-</b></div>
+    <div class="stat"><span>Tổng chi</span><b id="sOut">-</b></div>
+    <div class="stat"><span>Ngưỡng chữ ký</span><b id="sThr">-</b></div>
+    <div class="stat"><span>Trạng thái</span><b id="sPause">-</b></div>
+  </div>
+
+  <div class="card">
+    <h3>Đóng góp vào quỹ</h3>
+    <div class="row">
+      <input id="donAmt" placeholder="Số tiền (ETH)">
+      <input id="donNote" placeholder="Ghi chú mục đích">
+      <button id="btnDonate">Đóng góp</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Tạo đề xuất chi (chỉ quản lý)</h3>
+    <div class="row">
+      <input id="pRecipient" placeholder="Địa chỉ người nhận">
+      <input id="pAmount" placeholder="Số tiền (ETH)">
+      <input id="pDesc" placeholder="Mô tả / tên tệp dự toán (sẽ được băm)">
+      <input id="pDays" placeholder="Số ngày để đủ chữ ký (1-30)" value="7">
+      <button id="btnCreate">Tạo đề xuất</button>
+    </div>
+    <p style="font-size:13px">Lưu ý: chỉ mã băm của mô tả được ghi lên chuỗi; hãy lưu tệp gốc ở nơi công khai (IPFS, Drive) để người khác kiểm chứng.</p>
+  </div>
+
+  <div class="card">
+    <h3>Danh sách đề xuất</h3>
+    <table>
+      <thead><tr><th>#</th><th>Người nhận</th><th>Số tiền</th><th>Chữ ký</th><th>Trạng thái</th><th>Chứng từ</th><th>Thao tác</th></tr></thead>
+      <tbody id="tbody"><tr><td colspan="7">Chưa có dữ liệu</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Nhật ký sự kiện công khai (đọc trực tiếp từ chuỗi)</h3>
+    <table>
+      <thead><tr><th>Khối</th><th>Sự kiện</th><th>Tham số</th></tr></thead>
+      <tbody id="events"><tr><td colspan="3">Chưa có dữ liệu</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const ABI = [
+  "function threshold() view returns (uint32)",
+  "function isManager(address) view returns (bool)",
+  "function proposalCount() view returns (uint256)",
+  "function proposals(uint256) view returns (address proposer,address recipient,uint256 amount,bytes32 descriptionHash,bytes32 receiptHash,uint64 createdAt,uint64 deadline,uint64 executableAfter,uint32 approvals,uint32 confirmations,uint8 status)",
+  "function totalDonated() view returns (uint256)",
+  "function totalSpent() view returns (uint256)",
+  "function balance() view returns (uint256)",
+  "function paused() view returns (bool)",
+  "function donate(string note) payable",
+  "function createProposal(address recipient,uint256 amount,bytes32 descriptionHash,uint64 duration) returns (uint256)",
+  "function approve(uint256 id)",
+  "function execute(uint256 id)",
+  "function cancel(uint256 id)",
+  "function attachReceipt(uint256 id,bytes32 receiptHash)",
+  "function confirmReceipt(uint256 id)",
+  "event Donated(address indexed donor,uint256 amount,string note)",
+  "event ProposalCreated(uint256 indexed id,address indexed proposer,address indexed recipient,uint256 amount,bytes32 descriptionHash)",
+  "event Approved(uint256 indexed id,address indexed manager)",
+  "event Executed(uint256 indexed id,address indexed recipient,uint256 amount)",
+  "event ReceiptAttached(uint256 indexed id,bytes32 receiptHash)",
+  "event ReceiptConfirmed(uint256 indexed id,address indexed manager)",
+  "event Cancelled(uint256 indexed id,address indexed by)"
+];
+const STATUS = ["-", "Đã tạo", "Đã duyệt (chờ timelock)", "Đã giải ngân", "Đã có chứng từ", "Đã hủy"];
+const $ = (id) => document.getElementById(id);
+let provider, signer, fund, me, isMgr = false;
+
+function show(text, ok = true) { const m = $("msg"); m.textContent = text; m.className = ok ? "ok" : "err"; }
+function short(a) { return a.slice(0, 6) + "..." + a.slice(-4); }
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+const fmt = (v) => Number(ethers.formatEther(v)).toLocaleString("vi-VN", { maximumFractionDigits: 6 }) + " ETH";
+
+async function run(fn) {
+  try { await fn(); } catch (e) { show("Lỗi: " + (e.shortMessage || e.reason || e.message), false); console.error(e); }
+}
+
+$("btnConnect").onclick = () => run(async () => {
+  if (!window.ethereum) throw new Error("Chưa cài MetaMask");
+  provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  signer = await provider.getSigner();
+  me = await signer.getAddress();
+  $("acct").textContent = me;
+  show("Đã kết nối ví.");
+});
+
+$("btnLoad").onclick = () => run(async () => {
+  if (!signer) throw new Error("Hãy kết nối ví trước");
+  const a = $("addr").value.trim();
+  if (!ethers.isAddress(a)) throw new Error("Địa chỉ hợp đồng không hợp lệ");
+  fund = new ethers.Contract(a, ABI, signer);
+  await refresh();
+});
+
+async function refresh() {
+  isMgr = await fund.isManager(me);
+  $("role").textContent = isMgr ? "Quản lý quỹ" : "Thành viên / người xem";
+  $("sBal").textContent = fmt(await fund.balance());
+  $("sIn").textContent = fmt(await fund.totalDonated());
+  $("sOut").textContent = fmt(await fund.totalSpent());
+  $("sThr").textContent = String(await fund.threshold());
+  $("sPause").textContent = (await fund.paused()) ? "Đang tạm dừng" : "Hoạt động";
+
+  const n = Number(await fund.proposalCount());
+  const rows = [];
+  for (let i = 1; i <= n; i++) {
+    const p = await fund.proposals(i);
+    const st = Number(p.status);
+    const hasReceipt = p.receiptHash !== ethers.ZeroHash;
+    let actions = "";
+    if (isMgr && st === 1) actions += `<button onclick="act('approve',${i})">Ký duyệt</button> `;
+    if (st === 2) actions += `<button onclick="act('execute',${i})">Giải ngân</button> `;
+    if (isMgr && st === 3 && !hasReceipt) actions += `<button onclick="attach(${i})">Đăng chứng từ</button> `;
+    if (isMgr && st === 3 && hasReceipt) actions += `<button onclick="act('confirmReceipt',${i})">Xác nhận chứng từ</button> `;
+    if (isMgr && (st === 1 || st === 2) && p.proposer.toLowerCase() === me.toLowerCase()) actions += `<button class="secondary" onclick="act('cancel',${i})">Hủy</button>`;
+    rows.push(`<tr><td>${i}</td><td class="mono">${esc(p.recipient)}</td><td>${fmt(p.amount)}</td>
+      <td>${p.approvals}</td><td>${STATUS[st]}${st === 3 || st === 4 ? ` (${p.confirmations} xác nhận)` : ""}</td>
+      <td class="mono">${hasReceipt ? esc(short(p.receiptHash)) : "-"}</td><td>${actions}</td></tr>`);
+  }
+  $("tbody").innerHTML = rows.join("") || '<tr><td colspan="7">Chưa có đề xuất</td></tr>';
+
+  const evs = await fund.queryFilter("*", 0, "latest");
+  $("events").innerHTML = evs.slice(-60).reverse().map((ev) => {
+    const args = (ev.args ? Array.from(ev.args) : []).map((x) => typeof x === "bigint" ? x.toString() : x);
+    return `<tr><td>${ev.blockNumber}</td><td>${esc(ev.fragment ? ev.fragment.name : "?")}</td><td class="mono">${esc(args.join(", "))}</td></tr>`;
+  }).join("") || '<tr><td colspan="3">Chưa có sự kiện</td></tr>';
+}
+
+window.act = (fnName, id) => run(async () => {
+  const tx = await fund[fnName](id);
+  show("Đang chờ xác nhận giao dịch " + short(tx.hash) + "...");
+  await tx.wait();
+  show("Thành công: " + fnName + " #" + id);
+  await refresh();
+});
+
+window.attach = (id) => run(async () => {
+  const name = prompt("Nhập tên/nội dung hóa đơn để băm (trong thực tế: băm nội dung tệp hóa đơn):");
+  if (!name) return;
+  const tx = await fund.attachReceipt(id, ethers.keccak256(ethers.toUtf8Bytes(name)));
+  await tx.wait();
+  show("Đã đăng mã băm chứng từ cho đề xuất #" + id);
+  await refresh();
+});
+
+$("btnDonate").onclick = () => run(async () => {
+  if (!fund) throw new Error("Hãy tải hợp đồng trước");
+  const tx = await fund.donate($("donNote").value, { value: ethers.parseEther($("donAmt").value || "0") });
+  await tx.wait();
+  show("Cảm ơn bạn đã đóng góp!");
+  await refresh();
+});
+
+$("btnCreate").onclick = () => run(async () => {
+  if (!fund) throw new Error("Hãy tải hợp đồng trước");
+  const days = BigInt($("pDays").value || "7");
+  const tx = await fund.createProposal(
+    $("pRecipient").value.trim(),
+    ethers.parseEther($("pAmount").value || "0"),
+    ethers.keccak256(ethers.toUtf8Bytes($("pDesc").value)),
+    days * 86400n
+  );
+  await tx.wait();
+  show("Đã tạo đề xuất chi.");
+  await refresh();
+});
+</script>
+</body>
+</html>
